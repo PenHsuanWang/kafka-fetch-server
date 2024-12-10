@@ -105,6 +105,40 @@ kafka-fetch-server/
 └── README.md
 ```
 
+## Consumer Management Design
+
+In the current implementation, the KafkaRepository is serving as the centralized store for Consumer objects. This repository:
+ - Creates a Consumer instance using the confluent_kafka.Consumer constructor.
+ - Stores the consumer reference and its associated metadata (_consumers and _consumer_metadata dictionaries).
+ - Provides methods (create_consumer, get_all_consumers, get_consumers_by_manager, close_consumer, get_consumer_metadata) to manage and retrieve these consumers.
+
+In other words, the KafkaRepository is already the “one place” in the backend that holds onto the Consumer objects. The user interface (through the REST API endpoints) interacts with this repository indirectly via the service layer, which calls KafkaRepository methods. The key flow looks like this:
+1.	User Interface (Front-End):
+The UI sends requests to the backend’s API routes (e.g., POST /api/v1/kafka-managers/{manager_id}/consumers/ to create a consumer).
+2.	API Routes (Controller Layer):
+The FastAPI routes handle authentication, request validation, and then forward requests to the service layer. For example, the create_consumer endpoint calls ConsumerService.create_consumer(...).
+3.	Service Layer:
+The ConsumerService contains business logic. It:
+ - Validates input
+ - Calls the KafkaRepository to create or manage the consumer
+ - Returns domain models (e.g., ConsumerResponse) to the API routes
+4.	KafkaRepository (Central Store):
+The repository is where the actual Consumer object is created and stored. For example:
+ - create_consumer instantiates a Consumer object and stores it in memory.
+ - Other repository methods fetch or modify the Consumer instance by referencing these in-memory dictionaries.
+
+Because all interactions with the Consumer happen through the repository, you have a single, central place that manages these objects. The UI does not directly access this repository; it interacts through HTTP endpoints that eventually lead to repository operations. This layering ensures:
+ - Single Source of Truth: KafkaRepository holds the actual Consumer instances.
+ - Encapsulation: The UI only knows about high-level operations (e.g., create, list, delete), not the internal details of how consumers are stored or managed.
+ - Future Extendability: If you want to store consumers differently (e.g., in a database, or in a more advanced external store), you can replace the repository implementation without changing the UI or the service layer.
+
+If you want to enhance this design further, you could:
+ - Add Persistence: Instead of just storing consumers in memory, the repository could persist consumer configuration to a database. The actual running Consumer objects would still be managed in memory, but their configurations and states could be restored on restart.
+ - Introduce a State Management Layer: For even more explicit state management (e.g., if scaling horizontally and needing a distributed store), adapt the repository to interact with a shared data source (like Redis or ZooKeeper).
+ - Advanced UI Integration: The front-end can request, via the API, updates or reads of consumer state, and the repository remains the central, single place responsible for managing these Consumer instances.
+
+In summary, the current approach follows the idea of having one central place (the KafkaRepository) to manage Consumer objects, maintaining a clean separation of concerns and enabling easy future modifications.
+
 ## Getting Started
 
 ### Prerequisites
