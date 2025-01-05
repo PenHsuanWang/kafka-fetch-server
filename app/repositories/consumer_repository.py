@@ -4,7 +4,7 @@ from typing import Any, Optional
 from app.db.session import async_session
 from app.models.consumer import Consumer
 from app.api.schemas.consumer_requests import ConsumerCreateRequest, ConsumerUpdateRequest
-
+ConsumerRepository
 
 class ConsumerRepository:
     """

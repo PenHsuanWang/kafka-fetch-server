@@ -1,8 +1,8 @@
 """Business logic layer for Kafka consumers."""
 from typing import Dict, Any, Optional
 
-from app.services.kafka_consumer_manager import KafkaConsumerManager
-from app.api.schemas.consumer_requests import ConsumerCreateRequest, ConsumerUpdateRequest
+from app.services.kafka_manager_service import KafkaConsumerManager
+from app.api.v1.schemas.consumer_requests import ConsumerCreateRequest, ConsumerUpdateRequest
 
 
 class ConsumerService:

@@ -1,223 +1,362 @@
-"""Singleton manager that coordinates all active Kafka consumers and stores them in memory."""
+"""Singleton manager that stores all Kafka consumers in memory and supports future DB syncing.
+
+This manager is designed to handle all in-memory interactions for Kafka consumers, such as
+creation, update, deletion, and start/stop actions. It also provides a mechanism for recording
+operations in a journal for future asynchronous persistence in a database.
+"""
 
 import asyncio
-from typing import Dict, Any, Optional
+import uuid
+from typing import Dict, Any, Optional, List
 
-from app.api.schemas.consumer_requests import ConsumerCreateRequest, ConsumerUpdateRequest
-from app.repositories.consumer_repository import ConsumerRepository
-from app.repositories.processor_repository import ProcessorRepository
+from app.api.v1.schemas.consumer_requests import (
+    ConsumerCreateRequest,
+    ConsumerUpdateRequest,
+    ProcessorConfig,
+)
 from app.services.message_extractor import MessageExtractor
 from app.services.downstream_processors.processor_factory import ProcessorFactory
+
+#: Constant representing a 'create' operation.
+OP_CREATE = "CREATE"
+#: Constant representing an 'update' operation.
+OP_UPDATE = "UPDATE"
+#: Constant representing a 'delete' operation.
+OP_DELETE = "DELETE"
 
 
 class KafkaConsumerManager:
     """
-    A Singleton class that manages the lifecycle of Kafka consumers.
-    Maintains an in-memory store (consumer_store) mapping consumer_id to MessageExtractor.
+    A Singleton class that manages the lifecycle of Kafka consumers in memory,
+    while providing a framework for asynchronous persistence to a database.
+
+    **Key In-Memory Structures**:
+
+    - ``consumer_store``: A mapping of ``consumer_id`` to a :class:`MessageExtractor`.
+      This holds active consumer objects that are actually polling Kafka.
+    - ``consumer_data``: A dict of ``consumer_id -> dict`` storing metadata for each consumer
+      (e.g., broker IP, port, topic, group, status).
+    - ``processor_data``: A dict of ``consumer_id -> list of processor dicts`` describing how
+      messages are handled downstream.
+    - ``operation_journal``: A list of (op_type, consumer_id) pairs used to track create/update/delete
+      operations for asynchronous DB syncing.
+    - ``sync_in_progress``: A boolean flag used to ensure only one sync_with_db operation runs at a time.
     """
 
     _instance = None
-    consumer_store: Dict[str, MessageExtractor] = {}
     _lock = asyncio.Lock()
 
     def __new__(cls, *args, **kwargs):
         """
-        Implements the Singleton pattern: only one instance per process.
+        Implements the Singleton pattern so only one instance exists in a given process.
+
+        :return: The singleton instance of KafkaConsumerManager.
+        :rtype: KafkaConsumerManager
         """
         if cls._instance is None:
             cls._instance = super().__new__(cls)
+            # Initialize in-memory structures in the singleton instance.
+            cls._instance.consumer_store: Dict[str, MessageExtractor] = {}
+            cls._instance.consumer_data: Dict[str, Dict[str, Any]] = {}
+            cls._instance.processor_data: Dict[str, List[Dict[str, Any]]] = {}
+            cls._instance.operation_journal: List[tuple] = []
+            cls._instance.sync_in_progress: bool = False
         return cls._instance
 
     async def create_consumer(self, payload: ConsumerCreateRequest) -> Dict[str, Any]:
         """
-        Create a new consumer record in the DB, build the MessageExtractor, and optionally start it.
+        Create a new consumer in memory, build the :class:`MessageExtractor`, and optionally start it.
+        A "CREATE" operation is added to the operation journal for future DB syncing.
 
-        :param payload: The consumer creation payload
+        :param payload: The consumer creation request, containing broker info, topic, group, etc.
         :type payload: ConsumerCreateRequest
-        :return: A dictionary representing the newly created consumer
+        :return: A dictionary describing the newly created consumer, including its status and processors.
         :rtype: Dict[str, Any]
         """
-        consumer_record = await ConsumerRepository.create(payload)
+        consumer_id = str(uuid.uuid4())
 
-        # Insert processor configs
+        self.consumer_data[consumer_id] = {
+            "consumer_id": consumer_id,
+            "broker_ip": payload.broker_ip,
+            "broker_port": payload.broker_port,
+            "topic": payload.topic,
+            "consumer_group": payload.consumer_group,
+            "status": "INACTIVE",
+            "created_at": None,
+            "updated_at": None
+        }
+
+        proc_list = []
         for proc_cfg in payload.processor_configs:
-            await ProcessorRepository.create(consumer_id=str(consumer_record.id), config=proc_cfg)
+            proc_dict = {
+                "id": str(uuid.uuid4()),
+                "processor_type": proc_cfg.processor_type,
+                "config": proc_cfg.config,
+                "created_at": None,
+                "updated_at": None
+            }
+            proc_list.append(proc_dict)
+        self.processor_data[consumer_id] = proc_list
 
-        # Build the MessageExtractor
-        extractor = await self._build_extractor(consumer_record.id)
-        self.consumer_store[str(consumer_record.id)] = extractor
+        extractor = await self._build_extractor(consumer_id)
+        self.consumer_store[consumer_id] = extractor
 
-        # Auto-start if requested
         if payload.auto_start:
             await extractor.start()
-            await ConsumerRepository.update_status(str(consumer_record.id), "ACTIVE")
+            self.consumer_data[consumer_id]["status"] = "ACTIVE"
 
-        return await self._map_consumer_record_to_response(consumer_record.id)
+        self._record_operation(OP_CREATE, consumer_id)
+
+        return await self._map_consumer_record_to_response(consumer_id)
 
     async def get_consumer_record(self, consumer_id: str) -> Optional[Dict[str, Any]]:
         """
-        Retrieve the consumer record (including processors) from the DB.
+        Retrieve the in-memory record for a consumer by its ID.
 
-        :param consumer_id: The UUID of the consumer
+        :param consumer_id: The UUID of the consumer to fetch.
         :type consumer_id: str
-        :return: A dictionary of consumer details if found, else None
+        :return: The consumer's metadata and processors if found, otherwise None.
         :rtype: Optional[Dict[str, Any]]
         """
-        record = await ConsumerRepository.get_by_id(consumer_id)
-        if not record:
+        if consumer_id not in self.consumer_data:
             return None
         return await self._map_consumer_record_to_response(consumer_id)
 
     async def start_consumer(self, consumer_id: str) -> Optional[Dict[str, Any]]:
         """
-        Start a consumer if it's in the store and inactive.
+        Start a consumer if it exists in memory. If the corresponding :class:`MessageExtractor`
+        does not exist yet, it is built.
 
-        :param consumer_id: The UUID of the consumer
+        :param consumer_id: The UUID of the consumer to start.
         :type consumer_id: str
-        :return: Updated consumer details if found, else None
+        :return: The updated consumer record, or None if the consumer does not exist.
         :rtype: Optional[Dict[str, Any]]
         """
+        if consumer_id not in self.consumer_data:
+            return None
+
         extractor = self.consumer_store.get(consumer_id)
         if not extractor:
-            # Possibly consumer not loaded in memory
-            # Attempt to build it from DB
-            new_extractor = await self._build_extractor(consumer_id)
-            if not new_extractor:
+            extractor = await self._build_extractor(consumer_id)
+            if not extractor:
                 return None
-            self.consumer_store[consumer_id] = new_extractor
-            extractor = new_extractor
+            self.consumer_store[consumer_id] = extractor
 
         await extractor.start()
-        await ConsumerRepository.update_status(consumer_id, "ACTIVE")
+        self.consumer_data[consumer_id]["status"] = "ACTIVE"
+
+        self._record_operation(OP_UPDATE, consumer_id)
         return await self._map_consumer_record_to_response(consumer_id)
 
     async def stop_consumer(self, consumer_id: str) -> Optional[Dict[str, Any]]:
         """
-        Stop a consumer if it's active.
+        Stop an active consumer if it exists in memory.
 
-        :param consumer_id: The UUID of the consumer
+        :param consumer_id: The UUID of the consumer to stop.
         :type consumer_id: str
-        :return: Updated consumer details if found, else None
+        :return: The updated consumer record, or None if the consumer does not exist.
         :rtype: Optional[Dict[str, Any]]
         """
+        if consumer_id not in self.consumer_data:
+            return None
+
         extractor = self.consumer_store.get(consumer_id)
         if not extractor:
             return None
+
         await extractor.stop()
-        await ConsumerRepository.update_status(consumer_id, "INACTIVE")
+        self.consumer_data[consumer_id]["status"] = "INACTIVE"
+
+        self._record_operation(OP_UPDATE, consumer_id)
         return await self._map_consumer_record_to_response(consumer_id)
 
     async def update_consumer(self, consumer_id: str, payload: ConsumerUpdateRequest) -> Optional[Dict[str, Any]]:
         """
-        Update an existing consumer record and rebuild the extractor if necessary.
+        Update an existing consumer's broker info, topic, or processor configurations in memory.
+        A new :class:`MessageExtractor` is built if the processors are updated.
 
-        :param consumer_id: The UUID of the consumer
+        :param consumer_id: The UUID of the consumer to update.
         :type consumer_id: str
-        :param payload: The update payload
+        :param payload: Fields to update (e.g. broker_ip, broker_port, topic, processor_configs).
         :type payload: ConsumerUpdateRequest
-        :return: Updated consumer details if found, else None
+        :return: The updated consumer record, or None if not found.
         :rtype: Optional[Dict[str, Any]]
         """
-        updated_record = await ConsumerRepository.update(consumer_id, payload)
-        if not updated_record:
+        if consumer_id not in self.consumer_data:
             return None
 
-        # Recreate processor configs if provided
+        cdata = self.consumer_data[consumer_id]
+        if payload.broker_ip is not None:
+            cdata["broker_ip"] = payload.broker_ip
+        if payload.broker_port is not None:
+            cdata["broker_port"] = payload.broker_port
+        if payload.topic is not None:
+            cdata["topic"] = payload.topic
+
         if payload.processor_configs is not None:
-            await ProcessorRepository.delete_by_consumer_id(consumer_id)
+            new_proc_list = []
             for proc_cfg in payload.processor_configs:
-                await ProcessorRepository.create(consumer_id, proc_cfg)
+                proc_dict = {
+                    "id": str(uuid.uuid4()),
+                    "processor_type": proc_cfg.processor_type,
+                    "config": proc_cfg.config,
+                    "created_at": None,
+                    "updated_at": None
+                }
+                new_proc_list.append(proc_dict)
+            self.processor_data[consumer_id] = new_proc_list
 
-        # If the consumer is in memory, stop and rebuild
-        if consumer_id in self.consumer_store:
-            old_extractor = self.consumer_store[consumer_id]
-            await old_extractor.stop()
-            new_extractor = await self._build_extractor(consumer_id)
-            self.consumer_store[consumer_id] = new_extractor
+            if consumer_id in self.consumer_store:
+                old_extractor = self.consumer_store[consumer_id]
+                await old_extractor.stop()
 
+                new_extractor = await self._build_extractor(consumer_id)
+                self.consumer_store[consumer_id] = new_extractor
+
+                if cdata["status"] == "ACTIVE":
+                    await new_extractor.start()
+
+        self._record_operation(OP_UPDATE, consumer_id)
         return await self._map_consumer_record_to_response(consumer_id)
 
     async def delete_consumer(self, consumer_id: str) -> bool:
         """
-        Delete a consumer from the store and DB.
+        Delete a consumer from the in-memory store. If currently active, it is first stopped.
 
-        :param consumer_id: The UUID of the consumer
+        :param consumer_id: The UUID of the consumer to delete.
         :type consumer_id: str
-        :return: True if the consumer was found and deleted, otherwise False
+        :return: True if the consumer was found and deleted, False otherwise.
         :rtype: bool
         """
-        # Stop if active
-        if consumer_id in self.consumer_store:
-            extractor = self.consumer_store[consumer_id]
+        if consumer_id not in self.consumer_data:
+            return False
+
+        extractor = self.consumer_store.get(consumer_id)
+        if extractor:
             await extractor.stop()
             del self.consumer_store[consumer_id]
 
-        success = await ConsumerRepository.delete(consumer_id)
-        if not success:
-            return False
-        await ProcessorRepository.delete_by_consumer_id(consumer_id)
+        del self.consumer_data[consumer_id]
+        if consumer_id in self.processor_data:
+            del self.processor_data[consumer_id]
+
+        self._record_operation(OP_DELETE, consumer_id)
         return True
+
+    async def sync_with_db(self) -> None:
+        """
+        Example method to be called periodically or from a background task.
+        It processes the `operation_journal` and applies CREATE/UPDATE/DELETE
+        operations to the DB (pseudocode). Only one sync runs at a time.
+
+        :return: None
+        :rtype: None
+        """
+        async with self._lock:
+            if self.sync_in_progress:
+                # Already syncing, skip
+                return
+            self.sync_in_progress = True
+
+        try:
+            # Local copy of the journal
+            ops_to_sync = []
+            while self.operation_journal:
+                ops_to_sync.append(self.operation_journal.pop(0))
+
+            # TODO: Actual DB logic. For each (op_type, consumer_id):
+            for (op_type, cid) in ops_to_sync:
+                if op_type == OP_CREATE:
+                    # e.g., retrieve consumer_data[cid], insert in DB
+                    pass
+                elif op_type == OP_UPDATE:
+                    pass
+                elif op_type == OP_DELETE:
+                    pass
+
+        finally:
+            async with self._lock:
+                self.sync_in_progress = False
+
+    def _record_operation(self, op_type: str, consumer_id: str) -> None:
+        """
+        Record a create/update/delete operation for future DB synchronization.
+
+        :param op_type: One of OP_CREATE, OP_UPDATE, or OP_DELETE.
+        :type op_type: str
+        :param consumer_id: The consumer UUID.
+        :type consumer_id: str
+        :return: None
+        :rtype: None
+        """
+        self.operation_journal.append((op_type, consumer_id))
 
     async def _build_extractor(self, consumer_id: str) -> Optional[MessageExtractor]:
         """
-        Build a MessageExtractor from a consumer record and its processors.
+        Build a :class:`MessageExtractor` from the in-memory consumer and processor data.
 
-        :param consumer_id: The UUID of the consumer
+        :param consumer_id: The consumer UUID to look up in memory.
         :type consumer_id: str
-        :return: A newly created MessageExtractor if record exists, else None
+        :return: A new MessageExtractor if data is found, otherwise None.
         :rtype: Optional[MessageExtractor]
         """
-        record = await ConsumerRepository.get_by_id(consumer_id)
-        if not record:
+        if consumer_id not in self.consumer_data:
             return None
 
-        processor_records = await ProcessorRepository.get_by_consumer_id(consumer_id)
+        cdata = self.consumer_data[consumer_id]
+        proc_list = self.processor_data.get(consumer_id, [])
+
         processors = []
-        for p_rec in processor_records:
-            processor = await ProcessorFactory.create_processor(p_rec.processor_type, p_rec.config)
+        for p_dict in proc_list:
+            processor = await ProcessorFactory.create_processor(
+                p_dict["processor_type"],
+                p_dict["config"]
+            )
             processors.append(processor)
 
         extractor = MessageExtractor(
-            broker=f"{record.broker_ip}:{record.broker_port}",
-            topic=record.topic,
-            group_id=record.consumer_group,
+            broker=f"{cdata['broker_ip']}:{cdata['broker_port']}",
+            topic=cdata["topic"],
+            group_id=cdata["consumer_group"],
             processors=processors,
-            client_id=str(record.id)
+            client_id=consumer_id
         )
         return extractor
 
     async def _map_consumer_record_to_response(self, consumer_id: str) -> Dict[str, Any]:
         """
-        Build a dictionary describing the consumer + processors for API responses.
+        Convert the consumer and its processors from in-memory data into a dictionary
+        suitable for returning from an API endpoint.
 
-        :param consumer_id: The UUID of the consumer
+        :param consumer_id: The UUID of the consumer.
         :type consumer_id: str
-        :return: A dictionary representing the consumer and its processors
+        :return: A dictionary describing the consumer, including its processors, or an empty dict if not found.
         :rtype: Dict[str, Any]
         """
-        rec = await ConsumerRepository.get_by_id(consumer_id)
-        if not rec:
+        if consumer_id not in self.consumer_data:
             return {}
 
-        proc_recs = await ProcessorRepository.get_by_consumer_id(consumer_id)
-        processor_list = []
-        for p in proc_recs:
-            processor_list.append({
-                "id": str(p.id),
-                "processor_type": p.processor_type,
-                "config": p.config,
-                "created_at": p.created_at,
-                "updated_at": p.updated_at
+        cdata = self.consumer_data[consumer_id]
+        proc_list = self.processor_data.get(consumer_id, [])
+
+        processor_details = []
+        for p in proc_list:
+            processor_details.append({
+                "id": p["id"],
+                "processor_type": p["processor_type"],
+                "config": p["config"],
+                "created_at": p["created_at"],
+                "updated_at": p["updated_at"]
             })
 
         return {
-            "consumer_id": str(rec.id),
-            "broker_ip": rec.broker_ip,
-            "broker_port": rec.broker_port,
-            "topic": rec.topic,
-            "consumer_group": rec.consumer_group,
-            "status": rec.status,
-            "processor_configs": processor_list,
-            "created_at": rec.created_at,
-            "updated_at": rec.updated_at
+            "consumer_id": cdata["consumer_id"],
+            "broker_ip": cdata["broker_ip"],
+            "broker_port": cdata["broker_port"],
+            "topic": cdata["topic"],
+            "consumer_group": cdata["consumer_group"],
+            "status": cdata["status"],
+            "processor_configs": processor_details,
+            "created_at": cdata["created_at"],
+            "updated_at": cdata["updated_at"]
         }

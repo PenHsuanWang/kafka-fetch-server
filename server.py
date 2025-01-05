@@ -4,7 +4,7 @@ Defines the FastAPI `app` and includes routers for the Kafka Consumer Management
 """
 
 from fastapi import FastAPI
-from app.api.consumers import router as consumers_router
+from app.api.v1.consumers_routes import router as consumers_router
 
 
 app = FastAPI(title="Kafka Consumer Management Service")

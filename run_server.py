@@ -5,7 +5,7 @@ Initializes the Singleton KafkaConsumerManager and starts the FastAPI applicatio
 
 import uvicorn
 from server import app
-from app.services.kafka_consumer_manager import KafkaConsumerManager
+from app.services.kafka_manager_service import KafkaConsumerManager
 
 
 def main() -> None:
