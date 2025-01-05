@@ -1,54 +1,32 @@
-# app/models/consumer_model.py
-from pydantic import BaseModel, Field
-from typing import Optional
+"""SQLAlchemy model for the `consumers` table."""
+from sqlalchemy import Column, String, Integer, Enum, DateTime, text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.ext.declarative import declarative_base
+from datetime import datetime
 
-class ConsumerBase(BaseModel):
-    """
-    Base model for Consumers.
+Base = declarative_base()
 
-    :param consumer_name: A descriptive name for the consumer.
-    :type consumer_name: str
-    :param topic_name: The topic from which the consumer will read.
-    :type topic_name: str
-    :param group_id: Optional Kafka consumer group ID.
-    :type group_id: str
-    :param broker_ip: The IP address of the Kafka broker.
-    :type broker_ip: str
-    :param broker_port: The port of the Kafka broker.
-    :type broker_port: int
-    """
-    consumer_name: str = Field(..., example="MyConsumer")
-    topic_name: str = Field(..., example="my_topic")
-    group_id: Optional[str] = Field(None, example="my_group")
-    broker_ip: str = Field(..., example="127.0.0.1")
-    broker_port: int = Field(..., example=9092)
 
-class ConsumerCreate(ConsumerBase):
+class Consumer(Base):
     """
-    Model for creating a consumer. Inherits from ConsumerBase.
+    The Consumer model represents a Kafka consumer configuration.
     """
-    pass
+    __tablename__ = "consumers"
 
-class ConsumerResponse(BaseModel):
-    """
-    Response model for a consumer after creation or retrieval.
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("uuid_generate_v4()"))
+    broker_ip = Column(String, nullable=False)
+    broker_port = Column(Integer, nullable=False)
+    topic = Column(String, nullable=False)
+    consumer_group = Column(String, nullable=False)
+    status = Column(Enum("ACTIVE", "INACTIVE", "ERROR", name="consumer_status"), default="INACTIVE")
+    created_at = Column(DateTime(timezone=True), server_default=text("NOW()"))
+    updated_at = Column(DateTime(timezone=True), onupdate=text("NOW()"))
 
-    :param consumer_id: The unique identifier of the consumer.
-    :type consumer_id: str
-    :param consumer_name: The name of the consumer.
-    :type consumer_name: str
-    :param topic_name: The topic from which the consumer reads.
-    :type topic_name: str
-    :param group_id: The Kafka consumer group ID.
-    :type group_id: str, optional
-    :param manager_id: The ID of the Kafka Manager under which this consumer operates.
-    :type manager_id: int
-    :param status: Current status of the consumer (e.g., "running", "stopped").
-    :type status: str
-    """
-    consumer_id: str
-    consumer_name: str
-    topic_name: str
-    group_id: Optional[str]
-    manager_id: int
-    status: str
+    def __repr__(self) -> str:
+        """
+        Return a string representation of the Consumer model.
+
+        :return: String representation
+        :rtype: str
+        """
+        return f"<Consumer id={self.id} topic={self.topic} status={self.status}>"
