@@ -45,6 +45,8 @@ These capabilities enable you to:
 
 By abstracting the complexities involved in Kafka consumer management and providing a flexible architecture, the Kafka Fetcher Server allows you to focus on building applications without worrying about the underlying messaging infrastructure.
 
+![high-jevel-conceptual-diagram](https://hackmd.io/_uploads/B1Y8mQOL1g.png)
+
 ---
 
 ## **2. How to Run**
@@ -99,49 +101,110 @@ By abstracting the complexities involved in Kafka consumer management and provid
 
 ## **3. API Endpoints**
 
-Below are the **consumer management** and **monitoring** endpoints exposed by the Kafka Fetcher Server.
+Below are the **consumer management** and **monitoring** endpoints exposed by the Kafka Fetcher Server. These endpoints allow users to create, manage, and monitor Kafka consumers efficiently.
 
 ### **3.1. Consumer Management Endpoints**
 
-#### **3.1.1. Create a Consumer**
+#### **3.1.1. List All Consumers**
 
 **Endpoint**:
 ```
-POST /api/consumers
+GET /consumers/
 ```
 
-**Description**:
-Creates a Kafka consumer with specified configurations and (optionally) starts it immediately.
+**Description**:  
+Retrieves a list of all Kafka consumers currently managed in memory.
+
+**Example `curl` Command**:
+```bash
+curl -X GET "http://localhost:8000/consumers/" \
+     -H "Accept: application/json"
+```
+
+**Expected Response** (`200 OK`):
+```json
+[
+  {
+    "consumer_id": "123e4567-e89b-12d3-a456-426614174000",
+    "broker_ip": "192.168.0.10",
+    "broker_port": 9092,
+    "topic": "payments",
+    "consumer_group": "payment_group",
+    "status": "ACTIVE",
+    "processor_configs": [
+      {
+        "id": "223e4567-e89b-12d3-a456-426614174001",
+        "processor_type": "file_sink",
+        "config": {
+          "file_path": "/var/log/payment_messages.log"
+        },
+        "created_at": "2025-01-01T12:00:00Z",
+        "updated_at": "2025-01-01T12:00:00Z"
+      }
+    ],
+    "created_at": "2025-01-01T12:00:00Z",
+    "updated_at": "2025-01-01T12:00:00Z"
+  }
+]
+```
+
+---
+
+#### **3.1.2. Create a Consumer**
+
+**Endpoint**:
+```
+POST /consumers/
+```
+
+**Description**:  
+Creates a new Kafka consumer with specified configurations and (optionally) starts it immediately.
 
 **Request Body**:
-```json
-{
-  "broker_ip": "192.168.0.10",
-  "broker_port": 9092,
-  "topic": "payments",
-  "consumer_group": "payment_group",
-  "auto_start": true,
-  "processor_configs": [
-    {
-      "processor_type": "file_sink",
-      "config": {
-        "file_path": "/var/log/payment_messages.log"
-      }
-    },
-    {
-      "processor_type": "database_sync",
-      "config": {
-        "db_dsn": "postgresql://user:password@db-host/payments"
-      }
-    }
-  ]
-}
+
+The payload must adhere to the following structure:
+
+- **`broker_ip`** (`str`, **required**): The IP address of the Kafka broker.
+- **`broker_port`** (`int`, **required**): The port number of the Kafka broker.
+- **`topic`** (`str`, **required**): The Kafka topic to consume from.
+- **`consumer_group`** (`str`, **required**): The consumer group ID.
+- **`auto_start`** (`bool`, **required**): Determines whether the consumer should start immediately upon creation.
+- **`processor_configs`** (`list`, **required**): A list of downstream processor configurations.
+
+Each **processor configuration** within `processor_configs` must include:
+
+- **`processor_type`** (`str`, **required**): The type of processor (`file_sink`).
+- **`config`** (`dict`, **required**): A dictionary containing configuration parameters specific to the processor type.
+
+**Simplified Example Using Only `file_sink` Processor**:
+
+To minimize dependencies and simplify the setup, configure the consumer with only the `file_sink` processor. This avoids the need for additional services like PostgreSQL.
+
+**Example `curl` Command**:
+```bash
+curl -X POST "http://localhost:8000/consumers/" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "broker_ip": "192.168.0.10",
+           "broker_port": 9092,
+           "topic": "payments",
+           "consumer_group": "payment_group",
+           "auto_start": true,
+           "processor_configs": [
+             {
+               "processor_type": "file_sink",
+               "config": {
+                 "file_path": "/var/log/payment_messages.log"
+               }
+             }
+           ]
+         }'
 ```
 
-**Response**:
+**Expected Response** (`201 Created`):
 ```json
 {
-  "consumer_id": "uuid-string",
+  "consumer_id": "123e4567-e89b-12d3-a456-426614174000",
   "broker_ip": "192.168.0.10",
   "broker_port": 9092,
   "topic": "payments",
@@ -149,19 +212,10 @@ Creates a Kafka consumer with specified configurations and (optionally) starts i
   "status": "ACTIVE",
   "processor_configs": [
     {
-      "id": "uuid-string",
+      "id": "223e4567-e89b-12d3-a456-426614174001",
       "processor_type": "file_sink",
       "config": {
         "file_path": "/var/log/payment_messages.log"
-      },
-      "created_at": "2025-01-01T12:00:00Z",
-      "updated_at": "2025-01-01T12:00:00Z"
-    },
-    {
-      "id": "uuid-string",
-      "processor_type": "database_sync",
-      "config": {
-        "db_dsn": "postgresql://user:password@db-host/payments"
       },
       "created_at": "2025-01-01T12:00:00Z",
       "updated_at": "2025-01-01T12:00:00Z"
@@ -172,20 +226,38 @@ Creates a Kafka consumer with specified configurations and (optionally) starts i
 }
 ```
 
-#### **3.1.2. Get a Consumer**
+**Notes**:
+- The `consumer_id` is a UUID generated by the server.
+- The `status` field reflects whether the consumer is `ACTIVE` or `INACTIVE`.
+- `processor_configs` includes detailed configurations for each downstream processor, each with its own unique `id`.
+- By using only `file_sink`, you eliminate the need for setting up a database, making the quick start easier.
+
+---
+
+#### **3.1.3. Get a Consumer**
 
 **Endpoint**:
 ```
-GET /api/consumers/{consumer_id}
+GET /consumers/{consumer_id}
 ```
 
-**Description**:
+**Description**:  
 Fetches the **full details** of the specified consumer.
 
-**Response**:
+**Path Parameter**:
+- **`consumer_id`** (`str`, **required**): The UUID of the consumer to retrieve.
+
+**Example `curl` Command**:
+```bash
+curl -X GET "http://localhost:8000/consumers/123e4567-e89b-12d3-a456-426614174000" \
+     -H "Accept: application/json"
+```
+*Replace `123e4567-e89b-12d3-a456-426614174000` with your actual `consumer_id`.*
+
+**Expected Response** (`200 OK`):
 ```json
 {
-  "consumer_id": "uuid-string",
+  "consumer_id": "123e4567-e89b-12d3-a456-426614174000",
   "broker_ip": "192.168.0.10",
   "broker_port": 9092,
   "topic": "payments",
@@ -193,19 +265,10 @@ Fetches the **full details** of the specified consumer.
   "status": "ACTIVE",
   "processor_configs": [
     {
-      "id": "uuid-string",
+      "id": "223e4567-e89b-12d3-a456-426614174001",
       "processor_type": "file_sink",
       "config": {
         "file_path": "/var/log/payment_messages.log"
-      },
-      "created_at": "2025-01-01T12:00:00Z",
-      "updated_at": "2025-01-01T12:00:00Z"
-    },
-    {
-      "id": "uuid-string",
-      "processor_type": "database_sync",
-      "config": {
-        "db_dsn": "postgresql://user:password@db-host/payments"
       },
       "created_at": "2025-01-01T12:00:00Z",
       "updated_at": "2025-01-01T12:00:00Z"
@@ -216,106 +279,188 @@ Fetches the **full details** of the specified consumer.
 }
 ```
 
-#### **3.1.3. Start a Consumer**
+**Error Response** (`404 Not Found`):
+```json
+{
+  "detail": "Consumer 123e4567-e89b-12d3-a456-426614174000 not found"
+}
+```
+
+---
+
+#### **3.1.4. Start a Consumer**
 
 **Endpoint**:
 ```
-POST /api/consumers/{consumer_id}/start
+POST /consumers/{consumer_id}/start
 ```
 
-**Description**:
+**Description**:  
 Manually starts a **stopped** consumer.
 
-**Response**:
+**Path Parameter**:
+- **`consumer_id`** (`str`, **required**): The UUID of the consumer to start.
+
+**Example `curl` Command**:
+```bash
+curl -X POST "http://localhost:8000/consumers/123e4567-e89b-12d3-a456-426614174000/start" \
+     -H "Accept: application/json"
+```
+*Replace `123e4567-e89b-12d3-a456-426614174000` with your actual `consumer_id`.*
+
+**Expected Response** (`200 OK`):
 ```json
 {
-  "consumer_id": "uuid-string",
+  "consumer_id": "123e4567-e89b-12d3-a456-426614174000",
   "status": "ACTIVE"
 }
 ```
 
-#### **3.1.4. Stop a Consumer**
+**Error Response** (`404 Not Found`):
+```json
+{
+  "detail": "Consumer 123e4567-e89b-12d3-a456-426614174000 not found"
+}
+```
+
+---
+
+#### **3.1.5. Stop a Consumer**
 
 **Endpoint**:
 ```
-POST /api/consumers/{consumer_id}/stop
+POST /consumers/{consumer_id}/stop
 ```
 
-**Description**:
+**Description**:  
 Stops an **active** consumer.
 
-**Response**:
+**Path Parameter**:
+- **`consumer_id`** (`str`, **required**): The UUID of the consumer to stop.
+
+**Example `curl` Command**:
+```bash
+curl -X POST "http://localhost:8000/consumers/123e4567-e89b-12d3-a456-426614174000/stop" \
+     -H "Accept: application/json"
+```
+*Replace `123e4567-e89b-12d3-a456-426614174000` with your actual `consumer_id`.*
+
+**Expected Response** (`200 OK`):
 ```json
 {
-  "consumer_id": "uuid-string",
+  "consumer_id": "123e4567-e89b-12d3-a456-426614174000",
   "status": "INACTIVE"
 }
 ```
 
-#### **3.1.5. Update a Consumer**
-
-**Endpoint**:
-```
-PUT /api/consumers/{consumer_id}
-```
-
-**Description**:
-Updates consumer details (broker, topic, group, or changes downstream processors).
-
-**Request Body**:
+**Error Response** (`404 Not Found`):
 ```json
 {
-  "broker_ip": "new-broker-ip",
-  "broker_port": 9093,
-  "topic": "new_topic",
-  "processor_configs": [
-    {
-      "processor_type": "database_sync",
-      "config": {
-        "db_dsn": "postgresql://user:pwd@host/db"
-      }
-    }
-  ]
+  "detail": "Consumer 123e4567-e89b-12d3-a456-426614174000 not found"
 }
 ```
 
-**Response**:
+---
+
+#### **3.1.6. Update a Consumer**
+
+**Endpoint**:
+```
+PUT /consumers/{consumer_id}
+```
+
+**Description**:  
+Updates consumer details such as broker IP, broker port, topic, or processor configurations.
+
+**Path Parameter**:
+- **`consumer_id`** (`str`, **required**): The UUID of the consumer to update.
+
+**Request Body**:
+You can include any combination of the following fields to update:
+
+- **`broker_ip`** (`str`, *optional*): The new IP address of the Kafka broker.
+- **`broker_port`** (`int`, *optional*): The new port number of the Kafka broker.
+- **`topic`** (`str`, *optional*): The new Kafka topic to consume from.
+- **`consumer_group`** (`str`, *optional*): The new consumer group ID.
+- **`processor_configs`** (`list`, *optional*): A new list of downstream processor configurations.
+
+**Simplified Example Updating Only Broker IP and Port**:
+
+To keep things simple and avoid adding more dependencies, update only the broker details without altering processor configurations.
+
+**Example `curl` Command**:
+```bash
+curl -X PUT "http://localhost:8000/consumers/123e4567-e89b-12d3-a456-426614174000" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "broker_ip": "192.168.0.20",
+           "broker_port": 9094
+         }'
+```
+*Replace `123e4567-e89b-12d3-a456-426614174000` with your actual `consumer_id`.*
+
+**Expected Response** (`200 OK`):
 ```json
 {
-  "consumer_id": "uuid-string",
-  "broker_ip": "new-broker-ip",
-  "broker_port": 9093,
-  "topic": "new_topic",
+  "consumer_id": "123e4567-e89b-12d3-a456-426614174000",
+  "broker_ip": "192.168.0.20",
+  "broker_port": 9094,
+  "topic": "payments",
   "consumer_group": "payment_group",
   "status": "INACTIVE",
   "processor_configs": [
     {
-      "id": "uuid-string",
-      "processor_type": "database_sync",
+      "id": "223e4567-e89b-12d3-a456-426614174001",
+      "processor_type": "file_sink",
       "config": {
-        "db_dsn": "postgresql://user:pwd@host/db"
+        "file_path": "/var/log/payment_messages.log"
       },
       "created_at": "2025-01-01T12:00:00Z",
-      "updated_at": "2025-01-02T09:00:00Z"
+      "updated_at": "2025-01-03T10:00:00Z"
     }
   ],
   "created_at": "2025-01-01T12:00:00Z",
-  "updated_at": "2025-01-02T09:00:00Z"
+  "updated_at": "2025-01-03T10:00:00Z"
 }
 ```
 
-#### **3.1.6. Delete a Consumer**
+**Notes**:
+- If you choose to update `processor_configs`, ensure that the new configurations are complete. Existing processors not included in the new list will be removed.
+- Since we're focusing on minimizing dependencies, sticking with the `file_sink` processor ensures that you don't need to set up a database.
+
+---
+
+#### **3.1.7. Delete a Consumer**
 
 **Endpoint**:
 ```
-DELETE /api/consumers/{consumer_id}
+DELETE /consumers/{consumer_id}
 ```
 
-**Description**:
+**Description**:  
 Permanently deletes the consumer. If it’s active, it will be stopped first.
 
-**Response**:
-- **204 No Content** (successful deletion)
+**Path Parameter**:
+- **`consumer_id`** (`str`, **required**): The UUID of the consumer to delete.
+
+**Example `curl` Command**:
+```bash
+curl -X DELETE "http://localhost:8000/consumers/123e4567-e89b-12d3-a456-426614174000" \
+     -H "Accept: application/json"
+```
+*Replace `123e4567-e89b-12d3-a456-426614174000` with your actual `consumer_id`.*
+
+**Expected Response** (`204 No Content`):
+- **Body**: *(No content)*
+
+**Error Response** (`404 Not Found`):
+```json
+{
+  "detail": "Consumer 123e4567-e89b-12d3-a456-426614174000 not found"
+}
+```
+
+---
 
 ### **3.2. Monitoring Endpoints**
 
@@ -326,31 +471,34 @@ Permanently deletes the consumer. If it’s active, it will be stopped first.
 GET /monitor/consumer-group-offsets
 ```
 
-**Query Parameters**:
-- **`group_id`** (required, `str`): The Kafka consumer group ID you want to inspect.
-- **`bootstrap_servers`** (optional, `str`): The Kafka bootstrap server(s) to connect to. Defaults to `localhost:9092`.
-
-**Description**:
+**Description**:  
 Retrieves the **committed offsets** for all partitions (across all topics) tracked by the specified consumer group.
 
-**Example Request**:
+**Query Parameters**:
+- **`group_id`** (`str`, **required**): The Kafka consumer group ID you want to inspect.
+- **`bootstrap_servers`** (`str`, *optional*): The Kafka bootstrap server(s) to connect to. Defaults to `localhost:9092`.
+
+**Example `curl` Command**:
 ```bash
-curl -X GET "http://localhost:8000/monitor/consumer-group-offsets?group_id=my-consumer-group&bootstrap_servers=localhost:9092"
+curl -X GET "http://localhost:8000/monitor/consumer-group-offsets?group_id=payment_group&bootstrap_servers=localhost:9092" \
+     -H "Accept: application/json"
 ```
 
-**Example Response** (JSON):
+**Expected Response** (`200 OK`) (JSON):
 ```json
 {
-  "my-topic": {
+  "payments": {
     "0": 42,
     "1": 109,
     "2": 87
   },
-  "another-topic": {
+  "orders": {
     "0": 15
   }
 }
 ```
+
+---
 
 #### **3.2.2. Get Consumer Group Lag (for a Specific Topic)**
 
@@ -359,20 +507,21 @@ curl -X GET "http://localhost:8000/monitor/consumer-group-offsets?group_id=my-co
 GET /monitor/consumer-group-lag
 ```
 
-**Query Parameters**:
-- **`group_id`** (required, `str`): The Kafka consumer group ID to query.
-- **`topic`** (required, `str`): The topic you want to check for lag.
-- **`bootstrap_servers`** (optional, `str`): Defaults to `localhost:9092`.
-
-**Description**:
+**Description**:  
 Fetches the **current offset**, the **log-end offset**, and **lag** (difference) for each partition **in a single topic**, from the perspective of a given consumer group.
 
-**Example Request**:
+**Query Parameters**:
+- **`group_id`** (`str`, **required**): The Kafka consumer group ID to query.
+- **`topic`** (`str`, **required**): The topic you want to check for lag.
+- **`bootstrap_servers`** (`str`, *optional*): Defaults to `localhost:9092`.
+
+**Example `curl` Command**:
 ```bash
-curl -X GET "http://localhost:8000/monitor/consumer-group-lag?group_id=my-consumer-group&topic=my-topic&bootstrap_servers=localhost:9092"
+curl -X GET "http://localhost:8000/monitor/consumer-group-lag?group_id=payment_group&topic=payments&bootstrap_servers=localhost:9092" \
+     -H "Accept: application/json"
 ```
 
-**Example Response** (JSON):
+**Expected Response** (`200 OK`) (JSON):
 ```json
 {
   "0": {
@@ -392,6 +541,437 @@ curl -X GET "http://localhost:8000/monitor/consumer-group-lag?group_id=my-consum
   }
 }
 ```
+
+---
+
+### **3.3. Additional Testing Examples**
+
+To further assist you in testing the API endpoints, here are some additional `curl` commands that cover various scenarios:
+
+#### **3.3.1. Error Handling Example**
+
+**Scenario**:  
+Attempting to retrieve a consumer that does not exist.
+
+**Example `curl` Command**:
+```bash
+curl -X GET "http://localhost:8000/consumers/non-existent-uuid" \
+     -H "Accept: application/json"
+```
+
+**Expected Response** (`404 Not Found`):
+```json
+{
+  "detail": "Consumer non-existent-uuid not found"
+}
+```
+
+---
+
+#### **3.3.2. Update a Consumer Without Processor Configurations**
+
+**Endpoint**:
+```
+PUT /consumers/{consumer_id}
+```
+
+**Description**:  
+Updates only the broker IP and port without altering processor configurations.
+
+**Path Parameter**:
+- **`consumer_id`** (`str`, **required**): The UUID of the consumer to update.
+
+**Request Body**:
+```json
+{
+  "broker_ip": "192.168.0.20",
+  "broker_port": 9094
+}
+```
+
+**Example `curl` Command**:
+```bash
+curl -X PUT "http://localhost:8000/consumers/123e4567-e89b-12d3-a456-426614174000" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "broker_ip": "192.168.0.20",
+           "broker_port": 9094
+         }'
+```
+*Replace `123e4567-e89b-12d3-a456-426614174000` with your actual `consumer_id`.*
+
+**Expected Response** (`200 OK`):
+```json
+{
+  "consumer_id": "123e4567-e89b-12d3-a456-426614174000",
+  "broker_ip": "192.168.0.20",
+  "broker_port": 9094,
+  "topic": "payments",
+  "consumer_group": "payment_group",
+  "status": "INACTIVE",
+  "processor_configs": [
+    {
+      "id": "223e4567-e89b-12d3-a456-426614174001",
+      "processor_type": "file_sink",
+      "config": {
+        "file_path": "/var/log/payment_messages.log"
+      },
+      "created_at": "2025-01-01T12:00:00Z",
+      "updated_at": "2025-01-03T10:00:00Z"
+    }
+  ],
+  "created_at": "2025-01-01T12:00:00Z",
+  "updated_at": "2025-01-03T10:00:00Z"
+}
+```
+
+**Notes**:
+- Since we're not altering `processor_configs`, the existing `file_sink` processor remains unchanged.
+- The consumer status is updated to `INACTIVE` as a result of the broker changes.
+
+---
+
+### **3.4. Automated Testing with a Shell Script**
+
+To streamline the testing process, you can create a **shell script** that sequentially tests all API endpoints. Below is an example script named `test_api_endpoints.sh`:
+
+```bash
+#!/bin/bash
+
+# Ensure jq is installed for JSON parsing
+if ! command -v jq &> /dev/null
+then
+    echo "jq could not be found. Please install it to run this script."
+    exit
+fi
+
+BASE_URL="http://localhost:8000/consumers"
+
+echo "=== Creating a new consumer ==="
+CREATE_RESPONSE=$(curl -s -X POST "$BASE_URL/" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "broker_ip": "192.168.0.10",
+           "broker_port": 9092,
+           "topic": "payments",
+           "consumer_group": "payment_group",
+           "auto_start": true,
+           "processor_configs": [
+             {
+               "processor_type": "file_sink",
+               "config": {
+                 "file_path": "/var/log/payment_messages.log"
+               }
+             }
+           ]
+         }')
+
+echo "Response:"
+echo $CREATE_RESPONSE | jq
+
+# Extract consumer_id from the response
+CONSUMER_ID=$(echo $CREATE_RESPONSE | jq -r '.consumer_id')
+
+if [ "$CONSUMER_ID" == "null" ] || [ -z "$CONSUMER_ID" ]; then
+    echo "Failed to create consumer."
+    exit 1
+fi
+
+echo "Created Consumer ID: $CONSUMER_ID"
+
+echo "=== Listing all consumers ==="
+curl -s -X GET "$BASE_URL/" \
+     -H "Accept: application/json" | jq
+echo ""
+
+echo "=== Getting details of the created consumer ==="
+curl -s -X GET "$BASE_URL/$CONSUMER_ID" \
+     -H "Accept: application/json" | jq
+echo ""
+
+echo "=== Updating the consumer's broker IP and port ==="
+UPDATE_RESPONSE=$(curl -s -X PUT "$BASE_URL/$CONSUMER_ID" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "broker_ip": "192.168.0.20",
+           "broker_port": 9094
+         }')
+
+echo "Response:"
+echo $UPDATE_RESPONSE | jq
+echo ""
+
+echo "=== Stopping the consumer ==="
+STOP_RESPONSE=$(curl -s -X POST "$BASE_URL/$CONSUMER_ID/stop" \
+     -H "Accept: application/json")
+
+echo "Response:"
+echo $STOP_RESPONSE | jq
+echo ""
+
+echo "=== Starting the consumer ==="
+START_RESPONSE=$(curl -s -X POST "$BASE_URL/$CONSUMER_ID/start" \
+     -H "Accept: application/json")
+
+echo "Response:"
+echo $START_RESPONSE | jq
+echo ""
+
+echo "=== Deleting the consumer ==="
+DELETE_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$BASE_URL/$CONSUMER_ID" \
+     -H "Accept: application/json")
+
+echo "Response Code: $DELETE_RESPONSE"
+
+if [ "$DELETE_RESPONSE" == "204" ]; then
+    echo "Consumer deleted successfully."
+else
+    echo "Failed to delete consumer."
+fi
+```
+
+**Steps to Use the Script**:
+
+1. **Save the Script**:
+   - Create a new file named `test_api_endpoints.sh`.
+   - Paste the above script into the file.
+
+2. **Make the Script Executable**:
+    ```bash
+    chmod +x test_api_endpoints.sh
+    ```
+
+3. **Install `jq` (if not already installed)**:
+   - **macOS**:
+     ```bash
+     brew install jq
+     ```
+   - **Ubuntu/Linux**:
+     ```bash
+     sudo apt-get install jq
+     ```
+   - **Windows**:
+     - Download from [https://stedolan.github.io/jq/download/](https://stedolan.github.io/jq/download/) and follow installation instructions.
+
+4. **Run the Script**:
+    ```bash
+    ./test_api_endpoints.sh
+    ```
+
+**What the Script Does**:
+
+- **Creates** a new consumer with only the `file_sink` processor and captures the `consumer_id`.
+- **Lists** all consumers to verify creation.
+- **Fetches** the details of the newly created consumer.
+- **Updates** the broker IP and port of the consumer.
+- **Stops** the consumer.
+- **Starts** the consumer again.
+- **Deletes** the consumer.
+- **Outputs** the responses at each step for verification.
+
+*Ensure you have the FastAPI server running (`python run_server.py`) before executing the script.*
+
+---
+
+### **3.5. Monitoring Endpoints Testing**
+
+#### **3.5.1. Get Consumer Group Offsets**
+
+**Endpoint**:
+```
+GET /monitor/consumer-group-offsets
+```
+
+**Description**:  
+Retrieves the **committed offsets** for all partitions (across all topics) tracked by the specified consumer group.
+
+**Query Parameters**:
+- **`group_id`** (`str`, **required**): The Kafka consumer group ID you want to inspect.
+- **`bootstrap_servers`** (`str`, *optional*): The Kafka bootstrap server(s) to connect to. Defaults to `localhost:9092`.
+
+**Example `curl` Command**:
+```bash
+curl -X GET "http://localhost:8000/monitor/consumer-group-offsets?group_id=payment_group&bootstrap_servers=localhost:9092" \
+     -H "Accept: application/json"
+```
+
+**Expected Response** (`200 OK`) (JSON):
+```json
+{
+  "payments": {
+    "0": 42,
+    "1": 109,
+    "2": 87
+  },
+  "orders": {
+    "0": 15
+  }
+}
+```
+
+---
+
+#### **3.5.2. Get Consumer Group Lag for a Specific Topic**
+
+**Endpoint**:
+```
+GET /monitor/consumer-group-lag
+```
+
+**Description**:  
+Fetches the **current offset**, the **log-end offset**, and **lag** (difference) for each partition **in a single topic**, from the perspective of a given consumer group.
+
+**Query Parameters**:
+- **`group_id`** (`str`, **required**): The Kafka consumer group ID to query.
+- **`topic`** (`str`, **required**): The topic you want to check for lag.
+- **`bootstrap_servers`** (`str`, *optional*): Defaults to `localhost:9092`.
+
+**Example `curl` Command**:
+```bash
+curl -X GET "http://localhost:8000/monitor/consumer-group-lag?group_id=payment_group&topic=payments&bootstrap_servers=localhost:9092" \
+     -H "Accept: application/json"
+```
+
+**Expected Response** (`200 OK`) (JSON):
+```json
+{
+  "0": {
+    "current_offset": 42,
+    "log_end_offset": 45,
+    "lag": 3
+  },
+  "1": {
+    "current_offset": 109,
+    "log_end_offset": 109,
+    "lag": 0
+  },
+  "2": {
+    "current_offset": 87,
+    "log_end_offset": 92,
+    "lag": 5
+  }
+}
+```
+
+---
+
+### **3.6. Testing with JSON Files**
+
+For more complex requests, especially those involving multiple processors or intricate configurations, using JSON files can simplify the `curl` commands.
+
+#### **3.6.1. Create a JSON File for Consumer Creation**
+
+**File**: `create_consumer.json`
+
+**Content**:
+```json
+{
+  "broker_ip": "192.168.0.10",
+  "broker_port": 9092,
+  "topic": "payments",
+  "consumer_group": "payment_group",
+  "auto_start": true,
+  "processor_configs": [
+    {
+      "processor_type": "file_sink",
+      "config": {
+        "file_path": "/var/log/payment_messages.log"
+      }
+    }
+  ]
+}
+```
+*Note*: This JSON file includes only the `file_sink` processor to keep the setup simple.
+
+#### **3.6.2. Execute `curl` Using the JSON File**
+
+**Command**:
+```bash
+curl -X POST "http://localhost:8000/consumers/" \
+     -H "Content-Type: application/json" \
+     -d @create_consumer.json
+```
+
+**Explanation**:
+- `-d @create_consumer.json`: Instructs `curl` to read the request body from the `create_consumer.json` file.
+
+---
+
+### **3.7. Handling Authentication and Authorization (If Applicable)**
+
+If your API requires authentication (e.g., JWT tokens, API keys), include the necessary headers in your `curl` commands.
+
+#### **Example with Bearer Token**
+
+**Description**:  
+Includes a JWT token in the `Authorization` header.
+
+**Example `curl` Command**:
+```bash
+curl -X GET "http://localhost:8000/consumers/" \
+     -H "Authorization: Bearer your_jwt_token_here" \
+     -H "Accept: application/json"
+```
+*Replace `your_jwt_token_here` with your actual JWT token.*
+
+**Note**:  
+Ensure that your server is configured to handle authentication tokens appropriately.
+
+---
+
+### **3.8. Using Postman for Testing**
+
+For a more interactive and user-friendly testing experience, consider using [Postman](https://www.postman.com/).
+
+#### **Steps to Use Postman**
+
+1. **Install Postman**:
+   - Download and install Postman from [https://www.postman.com/downloads/](https://www.postman.com/downloads/).
+
+2. **Create a New Collection**:
+   - Open Postman and create a new collection named "Kafka Fetcher Server".
+
+3. **Add Requests to the Collection**:
+   - For each API endpoint, create a new request within the collection:
+     - **Method**: Select the appropriate HTTP method (`GET`, `POST`, `PUT`, `DELETE`).
+     - **URL**: Enter the full endpoint URL (e.g., `http://localhost:8000/consumers/`).
+     - **Headers**: Set necessary headers (e.g., `Content-Type: application/json`, `Accept: application/json`).
+     - **Body**: For `POST` and `PUT` requests, input the JSON payload in the Body tab.
+
+4. **Example: Create a Consumer**
+   - **Method**: `POST`
+   - **URL**: `http://localhost:8000/consumers/`
+   - **Headers**:
+     - `Content-Type`: `application/json`
+   - **Body**: Raw JSON as shown in the **Create a Consumer** section.
+   - **Send**: Click the "Send" button to execute the request and view the response.
+
+5. **Save and Organize Requests**:
+   - Save each request with descriptive names (e.g., "Create Consumer", "List Consumers") for easy access.
+
+6. **Execute and Test**:
+   - Use Postman’s interface to execute requests, view responses, and debug as needed.
+
+---
+
+### **3.9. Summary of API Endpoints**
+
+| **HTTP Method** | **Endpoint**                         | **Description**                                  |
+|-----------------|--------------------------------------|--------------------------------------------------|
+| `GET`           | `/consumers/`                        | List all consumers currently in memory.          |
+| `POST`          | `/consumers/`                        | Create a new Kafka consumer in memory.           |
+| `GET`           | `/consumers/{consumer_id}`           | Retrieve details of a specific consumer.         |
+| `PUT`           | `/consumers/{consumer_id}`           | Update an existing consumer's configurations.    |
+| `POST`          | `/consumers/{consumer_id}/start`     | Start a stopped Kafka consumer.                  |
+| `POST`          | `/consumers/{consumer_id}/stop`      | Stop an active Kafka consumer.                   |
+| `DELETE`        | `/consumers/{consumer_id}`           | Delete a Kafka consumer.                         |
+| `GET`           | `/monitor/consumer-group-offsets`     | Get committed offsets for a consumer group.      |
+| `GET`           | `/monitor/consumer-group-lag`         | Get lag details for a consumer group and topic.  |
+
+**Note**:
+- Replace `{consumer_id}` with the actual UUID of the consumer you intend to interact with.
+- Ensure your FastAPI application is running (e.g., via `python run_server.py`) before testing these endpoints.
+- Adjust the base URL (`http://localhost:8000`) as necessary based on your deployment configuration.
 
 ---
 

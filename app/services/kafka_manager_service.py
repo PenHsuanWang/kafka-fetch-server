@@ -1,4 +1,5 @@
-"""Singleton manager that stores all Kafka consumers in memory and supports future DB syncing.
+"""
+Singleton manager that stores all Kafka consumers in memory and supports future DB syncing.
 
 This manager is designed to handle all in-memory interactions for Kafka consumers, such as
 creation, update, deletion, and start/stop actions. It also provides a mechanism for recording
@@ -106,7 +107,6 @@ class KafkaConsumerManager:
             self.consumer_data[consumer_id]["status"] = "ACTIVE"
 
         self._record_operation(OP_CREATE, consumer_id)
-
         return await self._map_consumer_record_to_response(consumer_id)
 
     async def get_consumer_record(self, consumer_id: str) -> Optional[Dict[str, Any]]:
@@ -121,6 +121,18 @@ class KafkaConsumerManager:
         if consumer_id not in self.consumer_data:
             return None
         return await self._map_consumer_record_to_response(consumer_id)
+
+    async def list_consumers(self) -> List[Dict[str, Any]]:
+        """
+        Return a list of dictionaries describing each in-memory consumer.
+        Used by the /consumers/ GET endpoint.
+        """
+        all_consumers = []
+        for cid in self.consumer_data.keys():
+            c_record = await self._map_consumer_record_to_response(cid)
+            if c_record:
+                all_consumers.append(c_record)
+        return all_consumers
 
     async def start_consumer(self, consumer_id: str) -> Optional[Dict[str, Any]]:
         """
