@@ -27,7 +27,7 @@ class ConsumerUpdateRequest(BaseModel):
     """
     Request body for updating an existing consumer.
     """
-    broker_ip: Optional[str]
-    broker_port: Optional[int]
-    topic: Optional[str]
-    processor_configs: Optional[List[ProcessorConfig]]
+    broker_ip: Optional[str] = None
+    broker_port: Optional[int] = None
+    topic: Optional[str] = None
+    processor_configs: Optional[List[ProcessorConfig]] = None
