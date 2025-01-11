@@ -58,12 +58,19 @@ async def get_consumer(consumer_id: str) -> ConsumerResponse:
     """
     Retrieve details of an existing consumer by its ID.
 
-    :param consumer_id: The UUID of the consumer.
+    :param consumer_id: The UUID (string) of the consumer. If empty or invalid, raise 404.
     :type consumer_id: str
     :return: The ConsumerResponse if found.
     :rtype: ConsumerResponse
-    :raises HTTPException 404: If the consumer is not found.
+    :raises HTTPException 404: If the consumer is not found or consumer_id is empty.
     """
+    # If consumer_id is empty or whitespace, treat as not found
+    if not consumer_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Consumer {consumer_id} not found"
+        )
+
     manager = KafkaConsumerServingManager.get_instance()
     data = await manager.get_consumer_record(consumer_id)
     if not data:

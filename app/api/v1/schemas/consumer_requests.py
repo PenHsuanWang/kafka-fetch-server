@@ -41,7 +41,7 @@ class ConsumerCreateRequest(BaseModel):
 
     :ivar broker_ip: IP address of the Kafka broker.
     :vartype broker_ip: str
-    :ivar broker_port: Port of the Kafka broker.
+    :ivar broker_port: Port of the Kafka broker (must be > 0).
     :vartype broker_port: int
     :ivar topic: Name of the Kafka topic to consume from.
     :vartype topic: str
@@ -54,7 +54,11 @@ class ConsumerCreateRequest(BaseModel):
     """
 
     broker_ip: str
-    broker_port: conint(gt=0) = Field(..., description="Must be a positive integer.")
+    # Use conint(gt=0) to ensure broker_port must be greater than 0
+    broker_port: conint(gt=0) = Field(
+        ...,
+        description="Port of the Kafka broker (must be a positive integer)."
+    )
     topic: str
     consumer_group: str
     auto_start: bool = False
@@ -67,7 +71,7 @@ class ConsumerUpdateRequest(BaseModel):
 
     :ivar broker_ip: (Optional) New IP address for the broker.
     :vartype broker_ip: str or None
-    :ivar broker_port: (Optional) New port for the broker.
+    :ivar broker_port: (Optional) New port for the broker (must be > 0 if provided).
     :vartype broker_port: int or None
     :ivar topic: (Optional) New topic to consume from.
     :vartype topic: str or None
@@ -76,6 +80,7 @@ class ConsumerUpdateRequest(BaseModel):
     """
 
     broker_ip: Optional[str] = None
-    broker_port: conint(gt=0) = Field(..., description="Must be a positive integer.")
+    # Similarly, you can constrain update requests if you want
+    broker_port: Optional[conint(gt=0)] = None
     topic: Optional[str] = None
     processor_configs: Optional[List[ProcessorConfig]] = None
