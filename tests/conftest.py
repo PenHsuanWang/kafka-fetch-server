@@ -2,7 +2,10 @@
 
 import pytest
 import pytest_asyncio
+from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch
+
+from server import app
 
 from app.services.kafka_manager_service import KafkaConsumerManager
 
@@ -36,3 +39,31 @@ async def manager():
     yield mgr
 
     # Optional: any teardown logic, e.g. stopping active consumers.
+
+@pytest.fixture(scope="session")
+def test_client():
+    """
+    Provides a TestClient for FastAPI app, used in all tests.
+    
+    :return: A FastAPI TestClient instance
+    :rtype: TestClient
+    """
+    return TestClient(app)
+
+
+@pytest.fixture(scope="function", autouse=True)
+def mock_message_extractor():
+    """
+    Auto-applied fixture that mocks the 'MessageExtractor' class in the
+    kafka_consumer_serving_manager, preventing real Kafka connections.
+    
+    :return: None
+    :rtype: None
+    """
+    with patch("app.services.kafka_consumer_serving_manager.MessageExtractor") as mock_extractor_cls:
+        # We define start() and stop() as AsyncMock to avoid real network calls
+        instance = mock_extractor_cls.return_value
+        instance.start = AsyncMock()
+        instance.stop = AsyncMock()
+        yield
+        # After each test, we let the patch stop (context manager auto cleanup)

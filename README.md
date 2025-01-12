@@ -462,85 +462,119 @@ curl -X DELETE "http://localhost:8000/consumers/123e4567-e89b-12d3-a456-42661417
 
 ---
 
-### **3.2. Monitoring Endpoints**
+## 3.2. Consumer Group Monitoring Endpoints
 
-#### **3.2.1. Get Consumer Group Offsets**
+In addition to managing individual consumers, the Kafka Fetcher Server provides endpoints to **monitor consumer groups**. These allow you to **list** available groups and **fetch offset details** (e.g., committed offsets) for a particular group.
+
+### 3.2.1. List Consumer Groups
 
 **Endpoint**:
 ```
-GET /monitor/consumer-group-offsets
+GET /consumergroups/
 ```
 
 **Description**:  
-Retrieves the **committed offsets** for all partitions (across all topics) tracked by the specified consumer group.
+Returns a list of **Kafka consumer group IDs**. By default, it lists only the **consumer groups** recognized by this service (i.e., groups that you have created via this system). You can optionally specify a **query parameter** to list **all** consumer groups known to the Kafka cluster.
 
-**Query Parameters**:
-- **`group_id`** (`str`, **required**): The Kafka consumer group ID you want to inspect.
-- **`bootstrap_servers`** (`str`, *optional*): The Kafka bootstrap server(s) to connect to. Defaults to `localhost:9092`.
+**Query Parameter**:
+- **`all_groups`** (`bool`, *optional*; default: `false`):  
+  - **`true`** → Lists *all* consumer groups in the Kafka cluster.  
+  - **`false`** → Lists only consumer groups that this server created/knows about.
 
 **Example `curl` Command**:
 ```bash
-curl -X GET "http://localhost:8000/monitor/consumer-group-offsets?group_id=payment_group&bootstrap_servers=localhost:9092" \
-     -H "Accept: application/json"
+curl -X GET "http://localhost:8000/consumergroups?all_groups=true"
 ```
 
-**Expected Response** (`200 OK`) (JSON):
+**Expected Response** (`200 OK`):
 ```json
 {
-  "payments": {
-    "0": 42,
-    "1": 109,
-    "2": 87
-  },
-  "orders": {
-    "0": 15
-  }
+  "consumer_groups": [
+    "payment_group",
+    "order_group",
+    "inventory_group"
+  ]
+}
+```
+
+If the server has **no** local groups and `all_groups=false`, you might see:
+```json
+{
+  "consumer_groups": []
 }
 ```
 
 ---
 
-#### **3.2.2. Get Consumer Group Lag (for a Specific Topic)**
+### 3.2.2. Get Consumer Group Offsets
 
 **Endpoint**:
 ```
-GET /monitor/consumer-group-lag
+GET /consumergroups/{group_id}/offsets
 ```
 
 **Description**:  
-Fetches the **current offset**, the **log-end offset**, and **lag** (difference) for each partition **in a single topic**, from the perspective of a given consumer group.
+Retrieves **offset details** for a specified consumer group, including the **topic**, **partition**, and **current committed offset** for each partition that the group consumes. If the group does not exist or has no committed offsets, you receive **404 Not Found**.
 
-**Query Parameters**:
-- **`group_id`** (`str`, **required**): The Kafka consumer group ID to query.
-- **`topic`** (`str`, **required**): The topic you want to check for lag.
-- **`bootstrap_servers`** (`str`, *optional*): Defaults to `localhost:9092`.
+**Path Parameter**:
+- **`group_id`** (`str`, **required**): The consumer group ID to inspect.
 
 **Example `curl` Command**:
 ```bash
-curl -X GET "http://localhost:8000/monitor/consumer-group-lag?group_id=payment_group&topic=payments&bootstrap_servers=localhost:9092" \
-     -H "Accept: application/json"
+curl -X GET "http://localhost:8000/consumergroups/payment_group/offsets"
 ```
 
-**Expected Response** (`200 OK`) (JSON):
+**Expected Response** (`200 OK`):
 ```json
 {
-  "0": {
-    "current_offset": 42,
-    "log_end_offset": 45,
-    "lag": 3
-  },
-  "1": {
-    "current_offset": 109,
-    "log_end_offset": 109,
-    "lag": 0
-  },
-  "2": {
-    "current_offset": 87,
-    "log_end_offset": 92,
-    "lag": 5
-  }
+  "group_id": "payment_group",
+  "offsets": [
+    {
+      "topic": "payments",
+      "partition": 0,
+      "current_offset": 42,
+      "metadata": null
+    },
+    {
+      "topic": "payments",
+      "partition": 1,
+      "current_offset": 109,
+      "metadata": ""
+    }
+  ]
 }
 ```
+
+**Error Response** (`404 Not Found`):
+```json
+{
+  "detail": "Consumer group 'some_unknown_group' not found or no offsets committed."
+}
+```
+
+---
+
+### Example Usage
+
+1. **List All Groups** in the cluster:
+   ```bash
+   curl -X GET "http://localhost:8000/consumergroups?all_groups=true"
+   ```
+   This returns **every** consumer group that Kafka knows about, not just the ones managed by this server.
+
+2. **List Only Groups** known to this service:
+   ```bash
+   curl -X GET "http://localhost:8000/consumergroups"
+   ```
+   Returns consumer groups that the **Kafka Fetcher Server** has created in memory.
+
+3. **Get Offsets** for a specific group:
+   ```bash
+   curl -X GET "http://localhost:8000/consumergroups/payment_group/offsets"
+   ```
+   Provides an array of partition offsets (and optional metadata) for `payment_group`.
+
+With these **consumer group monitoring** endpoints, you can programmatically track **which consumer groups exist**, verify **where they are reading**, and **monitor** if they have **committed offsets** as expected.
 
 ---
 
