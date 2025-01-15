@@ -9,6 +9,7 @@ correctly handles listing groups and offsets.
 import pytest
 from unittest.mock import patch, MagicMock
 from kafka.structs import TopicPartition, OffsetAndMetadata
+from kafka.errors import KafkaError
 
 from app.services.kafka_monitoring_service import KafkaMonitoringService
 from app.services.kafka_consumer_serving_manager import KafkaConsumerServingManager
@@ -43,7 +44,7 @@ def mock_manager():
         "status": "INACTIVE"
     }
 
-    yield manager  # test code runs here
+    yield manager
 
     # Teardown/cleanup
     manager.consumer_data.clear()
@@ -126,11 +127,12 @@ def test_get_consumer_group_offsets_unknown_group(mock_admin_cls, mock_manager):
     mock_admin = MagicMock()
     mock_admin_cls.return_value = mock_admin
 
-    # Raise UnknownConsumerGroupError from kafka-python
-    from kafka.errors import UnknownConsumerGroupError
-    mock_admin.list_consumer_group_offsets.side_effect = UnknownConsumerGroupError
+    # Instead of UnknownConsumerGroupError, raise a generic KafkaError
+    mock_admin.list_consumer_group_offsets.side_effect = KafkaError("Unknown group")
 
     svc = KafkaMonitoringService()
     result = svc.get_consumer_group_offsets(group_id)
     assert result["group_id"] == group_id
+    # Because we treat KafkaError or empty offsets as "not found,"
+    # the code sets result["offsets"] = []
     assert result["offsets"] == []

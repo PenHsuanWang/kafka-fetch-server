@@ -83,8 +83,8 @@ class KafkaMonitoringService:
         }
         try:
             admin_client = KafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
-            offsets_map = admin_client.list_consumer_group_offsets(group_id)  # {TopicPartition: OffsetAndMetadata}
-
+            offsets_map = admin_client.list_consumer_group_offsets(group_id)
+            # offsets_map is a dict: {TopicPartition(topic='...', partition=0): OffsetAndMetadata(offset=..., metadata=...)}
             for tp, offmeta in offsets_map.items():
                 entry = {
                     "topic": tp.topic,
@@ -94,13 +94,16 @@ class KafkaMonitoringService:
                 }
                 result["offsets"].append(entry)
 
-        except errors.UnknownConsumerGroupError:
-            # The group doesn't exist or has no offsets
-            result["offsets"] = []
         except errors.KafkaError as e:
+            # In recent kafka-python versions, there's no UnknownConsumerGroupError.
+            # If we get ANY KafkaError (e.g. "Unknown group"), treat it as no offsets.
             print(f"Error fetching offsets for group {group_id}: {e}")
+            result["offsets"] = []
+
         finally:
             if 'admin_client' in locals():
                 admin_client.close()
 
         return result
+
+
