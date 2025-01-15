@@ -10,7 +10,7 @@ import pytest
 from fastapi import status
 from unittest.mock import patch, MagicMock
 
-from app.main import app  # or your server.py where `app` is defined
+from server import app
 from fastapi.testclient import TestClient
 
 client = TestClient(app)

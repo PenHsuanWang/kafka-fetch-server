@@ -1,5 +1,3 @@
-# file: tests/api/v1/test_consumers_routes.py
-
 """
 Test Consumers Routes
 =====================
@@ -20,9 +18,7 @@ from typing import List
 
 from app.services.kafka_consumer_serving_manager import KafkaConsumerServingManager
 
-
 created_consumer_id = None  # Will store the first created consumer's ID
-
 
 def test_list_consumers_initially_empty(test_client):
     """
@@ -211,15 +207,14 @@ def test_delete_consumer_already_deleted(test_client):
 
 
 @pytest.mark.parametrize("invalid_id", [
-    "",  # empty
-    " ",  # space
+    " ",        # space
     "not-a-uuid",  # random string
-    "12345",  # numeric but not a real ID
+    "12345",    # numeric but not a real ID
 ])
 def test_get_consumer_invalid_id_format(test_client, invalid_id):
     """
     Scenario: GET with an ID that doesn't conform to typical UUID format.
-    It should still respond with 404, since the route expects a string, but it's not found.
+    It should still respond with 404, since the route expects a real ID.
     """
     response = test_client.get(f"/consumers/{invalid_id}")
     assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -267,9 +262,6 @@ def test_concurrent_creates_no_kafka_connection(test_client):
     Scenario: Simulate creating multiple consumers "concurrently."
     We rely on the mock to ensure no real Kafka connections are made.
     """
-    # Could spin up threads or just sequentially call as if concurrent
-    # For demonstration, we'll do it sequentially but you could use asyncio tasks.
-
     manager = KafkaConsumerServingManager.get_instance()
     manager.consumer_data.clear()
     manager.consumer_store.clear()
