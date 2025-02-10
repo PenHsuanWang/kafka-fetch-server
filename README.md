@@ -1009,6 +1009,207 @@ For a more interactive and user-friendly testing experience, consider using [Pos
 
 ---
 
+## **Consumer Statuses and Lifecycle**
+
+In this system, each Kafka consumer is tracked with a status that reflects its current operation state. This status is returned in responses to all API calls and is used internally to manage the consumer’s behavior in the system. The following are the three key statuses:
+
+### **1. INACTIVE**
+- **Definition:**  
+  The consumer exists (its configuration has been created and persisted in-memory and/or in the database) but is not actively polling messages from Kafka.
+  
+- **When It Occurs:**  
+  - **Upon Creation:**  
+    When a consumer is created via the `POST /consumers` endpoint with the flag `auto_start` set to **false**, the consumer is created in the `INACTIVE` state.
+    
+  - **After Stopping:**  
+    When an active consumer is explicitly stopped using the `POST /consumers/{consumer_id}/stop` endpoint, its status transitions to `INACTIVE`.
+
+- **API Example:**  
+  **Create Consumer (auto_start = false)**  
+  ```bash
+  curl -X POST "http://localhost:8000/consumers/" \
+       -H "Content-Type: application/json" \
+       -d '{
+             "broker_ip": "localhost",
+             "broker_port": 9092,
+             "topic": "payments",
+             "consumer_group": "payment_group",
+             "auto_start": false,
+             "processor_configs": [
+               {
+                 "processor_type": "file_sink",
+                 "config": {"file_path": "/var/log/payment_messages.log"}
+               }
+             ]
+           }'
+  ```
+  **Expected Response:**  
+  ```json
+  {
+    "consumer_id": "uuid-generated-by-server",
+    "broker_ip": "localhost",
+    "broker_port": 9092,
+    "topic": "payments",
+    "consumer_group": "payment_group",
+    "status": "INACTIVE",
+    "processor_configs": [ ... ],
+    "created_at": "...",
+    "updated_at": "..."
+  }
+  ```
+
+---
+
+### **2. ACTIVE**
+- **Definition:**  
+  The consumer is actively polling Kafka messages and processing them using its configured downstream processors.
+  
+- **When It Occurs:**  
+  - **Auto-start on Creation:**  
+    If the consumer is created with `auto_start` set to **true**, it immediately transitions to the `ACTIVE` state after a successful creation.
+    
+  - **Manual Start:**  
+    When a consumer in the `INACTIVE` state is started using the `POST /consumers/{consumer_id}/start` endpoint, the consumer transitions to the `ACTIVE` state.
+    
+- **API Example:**  
+  **Start Consumer**  
+  ```bash
+  curl -X POST "http://localhost:8000/consumers/{consumer_id}/start" \
+       -H "Accept: application/json"
+  ```
+  **Expected Response:**  
+  ```json
+  {
+    "consumer_id": "{consumer_id}",
+    "status": "ACTIVE",
+    ...
+  }
+  ```
+
+---
+
+### **3. ERROR**
+- **Definition:**  
+  The consumer has encountered a critical error—either in the Kafka consumption logic (e.g., connection failures, misconfiguration) or within one of the downstream processors—that stops it from functioning as expected.
+  
+- **When It Occurs:**  
+  - **Runtime Exceptions:**  
+    During the execution of the asynchronous message consumption loop (in `MessageExtractor._consume_loop`), if an unexpected exception occurs, the error is logged and (if configured) the consumer’s status should be updated to `ERROR`.
+    
+  - **Processor Failure:**  
+    If a downstream processor signals a critical failure (and the design is extended to support that), the consumer’s status may be set to `ERROR`.  
+    *(Note: In the current implementation, the error is logged and further handling can be added as a future enhancement, such as auto-recovery.)*
+    
+- **API Behavior:**  
+  When a consumer is in the `ERROR` state, subsequent API calls such as `GET /consumers/{consumer_id}` will return a status of `"ERROR"`. The client (or admin) may choose to delete, reconfigure, or attempt to restart the consumer after investigating the issue.
+
+---
+
+### **Lifecycle Transitions**
+
+Below is a summary of how the consumer status transitions with typical API calls:
+
+1. **Creation:**
+   - **POST /consumers**
+     - **auto_start = false:** → Status is set to `INACTIVE`
+     - **auto_start = true:** → The consumer immediately starts and transitions to `ACTIVE`
+  
+2. **Starting a Consumer:**
+   - **POST /consumers/{consumer_id}/start**
+     - If the consumer is `INACTIVE`, it starts consuming messages and its status is set to `ACTIVE`.
+     - If the consumer is already `ACTIVE`, the call returns a status of `ACTIVE` (no duplicate start).
+  
+3. **Stopping a Consumer:**
+   - **POST /consumers/{consumer_id}/stop**
+     - If the consumer is `ACTIVE`, stopping it transitions its status to `INACTIVE`.
+     - If the consumer is already `INACTIVE`, the endpoint returns the current state (`INACTIVE`).
+  
+4. **Error Handling:**
+   - During consumption (or in processor logic), if an unrecoverable error occurs:
+     - The system logs the error.
+     - The consumer can be transitioned to `ERROR`, and the API will then reflect that status.
+  
+5. **Deletion:**
+   - **DELETE /consumers/{consumer_id}**
+     - If the consumer is active, it is stopped first.
+     - Its record is then deleted, removing it from the system.
+
+---
+
+### **Detailed API Specification and Status Behavior**
+
+#### **Consumer Management Endpoints**
+
+- **List Consumers:**  
+  - **GET /consumers/**
+  - Returns all consumers with their statuses.
+  
+- **Create Consumer:**  
+  - **POST /consumers/**
+  - **Request Body Specification:**
+    - `broker_ip` (string, required)
+    - `broker_port` (integer, required)
+    - `topic` (string, required)
+    - `consumer_group` (string, required)
+    - `auto_start` (boolean, required)
+    - `processor_configs` (list, required) – Each item must include:
+      - `processor_type` (string)
+      - `config` (object with processor-specific parameters)
+  - **Response:**
+    - Consumer object with properties including:
+      - `consumer_id` (generated UUID)
+      - `status` (`ACTIVE` if auto-start is true; otherwise `INACTIVE`)
+  
+- **Get Consumer:**  
+  - **GET /consumers/{consumer_id}**
+  - Returns the current configuration and status of the consumer.
+  
+- **Update Consumer:**  
+  - **PUT /consumers/{consumer_id}**
+  - Supports partial updates. Changing processor configuration will trigger an update of the internal downstream processor list and may trigger a restart (if the consumer was active).
+  
+- **Start Consumer:**  
+  - **POST /consumers/{consumer_id}/start**
+  - Transitions the consumer from `INACTIVE` to `ACTIVE`.
+  
+- **Stop Consumer:**  
+  - **POST /consumers/{consumer_id}/stop**
+  - Transitions the consumer from `ACTIVE` to `INACTIVE`.
+  
+- **Delete Consumer:**  
+  - **DELETE /consumers/{consumer_id}**
+  - Stops (if active) and removes the consumer record; the deleted consumer is no longer retrievable.
+
+#### **Monitoring Endpoints**
+
+- **List Consumer Groups:**  
+  - **GET /consumergroups/** – Returns the list of groups tracked by the system (optionally, all groups available in Kafka).
+  
+- **Get Consumer Group Offsets:**  
+  - **GET /consumergroups/{group_id}/offsets**
+  - Returns detailed offset information for each partition of the topics consumed by the specified group.  
+  - If the consumer group does not exist or has no offsets committed, the response is a `404` error.
+
+---
+
+### **Example Workflow**
+
+1. **Creating an Active Consumer:**
+   - You send a POST request with `auto_start` set to `true`. The consumer is created and immediately starts consuming, returning a status of `ACTIVE`.
+   
+2. **Stopping an Active Consumer:**
+   - When you call the stop endpoint, the consumer stops processing messages and transitions to `INACTIVE`.
+   
+3. **Restarting an Inactive Consumer:**
+   - Sending a start request on an inactive consumer returns it to `ACTIVE` mode.
+   
+4. **Error Scenario:**
+   - If a critical error occurs during message processing, the system will log the error, and (if configured) set the consumer’s status to `ERROR`. This lets you or an administrator know that intervention may be required.
+   
+5. **Deleting a Consumer:**
+   - Whether active or inactive, deleting a consumer removes its configuration and stops any processing.
+
+
 ## **4. Configuration**
 
 ### **4.1. Environment Variables**
