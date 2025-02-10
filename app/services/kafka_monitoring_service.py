@@ -5,11 +5,12 @@ Kafka Monitoring Service
 ========================
 
 Provides methods to list consumer groups and retrieve offset details
-via Kafka AdminClient (from the kafka-python library).
+via Kafka AdminClient (from the kafka-python library). It also provides
+a method to compute consumer group lag for a given topic.
 """
 
 from typing import List, Dict, Any
-from kafka import KafkaAdminClient, errors
+from kafka import KafkaAdminClient, KafkaConsumer, errors
 from kafka.structs import TopicPartition, OffsetAndMetadata
 
 from app.services.kafka_consumer_serving_manager import KafkaConsumerServingManager
@@ -18,13 +19,13 @@ from app.services.kafka_consumer_serving_manager import KafkaConsumerServingMana
 class KafkaMonitoringService:
     """
     A service that uses KafkaAdminClient to retrieve consumer group metadata,
-    such as group listings and current offsets.
+    such as group listings and current offsets, and computes consumer group lag.
     """
 
     def __init__(self, bootstrap_servers: str = "localhost:9092"):
         """
         :param bootstrap_servers: The Kafka broker(s) to connect to.
-                                 e.g. "host1:9092,host2:9092"
+                                   e.g. "host1:9092,host2:9092"
         :type bootstrap_servers: str
         """
         self.bootstrap_servers = bootstrap_servers
@@ -93,17 +94,86 @@ class KafkaMonitoringService:
                     "metadata": offmeta.metadata
                 }
                 result["offsets"].append(entry)
-
         except errors.KafkaError as e:
-            # In recent kafka-python versions, there's no UnknownConsumerGroupError.
-            # If we get ANY KafkaError (e.g. "Unknown group"), treat it as no offsets.
             print(f"Error fetching offsets for group {group_id}: {e}")
             result["offsets"] = []
+        finally:
+            if 'admin_client' in locals():
+                admin_client.close()
+        return result
 
+    def get_consumer_group_lag(self, group_id: str, topic: str) -> Dict[str, Any]:
+        """
+        Compute lag information for the specified consumer group and topic.
+        It retrieves the group's committed offsets via the AdminClient,
+        then creates a temporary KafkaConsumer (without group_id) to query the
+        log-end offsets for the topic's partitions, and finally computes the lag.
+
+        :param group_id: The Kafka consumer group ID.
+        :type group_id: str
+        :param topic: The topic to query.
+        :type topic: str
+        :return: A dictionary such as:
+            {
+                "group_id": "groupA",
+                "topic": "topicA",
+                "partitions": {
+                    0: { "current_offset": 123, "log_end_offset": 130, "lag": 7 },
+                    1: { ... },
+                    ...
+                }
+            }
+        :rtype: Dict[str, Any]
+        """
+        result = {
+            "group_id": group_id,
+            "topic": topic,
+            "partitions": {}
+        }
+        # Step 1: Use AdminClient to get the committed offsets for the given group and topic.
+        group_offsets = {}
+        try:
+            admin_client = KafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
+            offsets_map = admin_client.list_consumer_group_offsets(group_id)
+            # Filter offsets for the given topic.
+            for tp, offmeta in offsets_map.items():
+                if tp.topic == topic:
+                    group_offsets[tp.partition] = offmeta.offset
+        except errors.KafkaError as e:
+            print(f"Error fetching offsets for group {group_id}: {e}")
         finally:
             if 'admin_client' in locals():
                 admin_client.close()
 
+        if not group_offsets:
+            raise Exception(f"No committed offsets found for group '{group_id}' on topic '{topic}'")
+
+        # Step 2: Create a temporary KafkaConsumer (without group_id) to get log-end offsets.
+        consumer = KafkaConsumer(
+            bootstrap_servers=self.bootstrap_servers,
+            group_id=None,  # do not join consumer group，just used to be check-up tool
+            enable_auto_commit=False,
+            auto_offset_reset="latest"
+        )
+        try:
+            partitions = [TopicPartition(topic, p) for p in group_offsets.keys()]
+            consumer.assign(partitions)
+            # Poll once to ensure metadata is updated.
+            consumer.poll(timeout_ms=5000)
+            end_offsets = consumer.end_offsets(partitions)
+            for tp in partitions:
+                current_offset = group_offsets.get(tp.partition, 0)
+                log_end_offset = end_offsets.get(tp, 0)
+                lag = log_end_offset - current_offset if log_end_offset >= current_offset else 0
+                result["partitions"][tp.partition] = {
+                    "current_offset": current_offset,
+                    "log_end_offset": log_end_offset,
+                    "lag": lag
+                }
+        except Exception as e:
+            print(f"Error fetching log end offsets: {e}")
+            result["partitions"] = {}
+        finally:
+            consumer.close()
+
         return result
-
-
