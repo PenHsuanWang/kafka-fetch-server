@@ -185,16 +185,16 @@ To minimize dependencies and simplify the setup, configure the consumer with onl
 curl -X POST "http://localhost:8000/consumers/" \
      -H "Content-Type: application/json" \
      -d '{
-           "broker_ip": "192.168.0.10",
-           "broker_port": 9092,
-           "topic": "payments",
-           "consumer_group": "payment_group",
+           "broker_ip": "localhost",
+           "broker_port": 19092,
+           "topic": "TopicA",
+           "consumer_group": "groupA",
            "auto_start": true,
            "processor_configs": [
              {
                "processor_type": "file_sink",
                "config": {
-                 "file_path": "/var/log/payment_messages.log"
+                 "file_path": "./logs_test/topicA_messages_1.log"
                }
              }
            ]
@@ -205,10 +205,10 @@ curl -X POST "http://localhost:8000/consumers/" \
 ```json
 {
   "consumer_id": "123e4567-e89b-12d3-a456-426614174000",
-  "broker_ip": "192.168.0.10",
-  "broker_port": 9092,
-  "topic": "payments",
-  "consumer_group": "payment_group",
+  "broker_ip": "localhost",
+  "broker_port": 19092,
+  "topic": "TopicA",
+  "consumer_group": "groupA",
   "status": "ACTIVE",
   "processor_configs": [
     {
@@ -260,8 +260,8 @@ curl -X GET "http://localhost:8000/consumers/123e4567-e89b-12d3-a456-42661417400
   "consumer_id": "123e4567-e89b-12d3-a456-426614174000",
   "broker_ip": "192.168.0.10",
   "broker_port": 9092,
-  "topic": "payments",
-  "consumer_group": "payment_group",
+  "topic": "TopicA",
+  "consumer_group": "groupA",
   "status": "ACTIVE",
   "processor_configs": [
     {
@@ -462,11 +462,11 @@ curl -X DELETE "http://localhost:8000/consumers/123e4567-e89b-12d3-a456-42661417
 
 ---
 
-## 3.2. Consumer Group Monitoring Endpoints
+### **3.2. Consumer Group Monitoring Endpoints**
 
-In addition to managing individual consumers, the Kafka Fetcher Server provides endpoints to **monitor consumer groups**. These allow you to **list** available groups and **fetch offset details** (e.g., committed offsets) for a particular group.
+In addition to managing individual consumers, the Kafka Fetcher Server provides endpoints to **monitor consumer groups**. These allow you to list available groups, fetch offset details for a particular group, and calculate lag for each partition in a topic.
 
-### 3.2.1. List Consumer Groups
+#### **3.2.1. List Consumer Groups**
 
 **Endpoint**:
 ```
@@ -474,39 +474,15 @@ GET /consumergroups/
 ```
 
 **Description**:  
-Returns a list of **Kafka consumer group IDs**. By default, it lists only the **consumer groups** recognized by this service (i.e., groups that you have created via this system). You can optionally specify a **query parameter** to list **all** consumer groups known to the Kafka cluster.
+Returns a list of **Kafka consumer group IDs** recognized by this service or known to the Kafka cluster.
 
-**Query Parameter**:
 - **`all_groups`** (`bool`, *optional*; default: `false`):  
-  - **`true`** → Lists *all* consumer groups in the Kafka cluster.  
-  - **`false`** → Lists only consumer groups that this server created/knows about.
-
-**Example `curl` Command**:
-```bash
-curl -X GET "http://localhost:8000/consumergroups?all_groups=true"
-```
-
-**Expected Response** (`200 OK`):
-```json
-{
-  "consumer_groups": [
-    "payment_group",
-    "order_group",
-    "inventory_group"
-  ]
-}
-```
-
-If the server has **no** local groups and `all_groups=false`, you might see:
-```json
-{
-  "consumer_groups": []
-}
-```
+  - **`true`** → Lists *all* consumer groups known to Kafka.  
+  - **`false`** → Lists only the groups created or managed by this server.
 
 ---
 
-### 3.2.2. Get Consumer Group Offsets
+#### **3.2.2. Get Consumer Group Offsets**
 
 **Endpoint**:
 ```
@@ -514,67 +490,54 @@ GET /consumergroups/{group_id}/offsets
 ```
 
 **Description**:  
-Retrieves **offset details** for a specified consumer group, including the **topic**, **partition**, and **current committed offset** for each partition that the group consumes. If the group does not exist or has no committed offsets, you receive **404 Not Found**.
+Retrieves **detailed offset information** (committed offsets) for each partition in the specified consumer group.
 
 **Path Parameter**:
 - **`group_id`** (`str`, **required**): The consumer group ID to inspect.
 
 **Example `curl` Command**:
 ```bash
-curl -X GET "http://localhost:8000/consumergroups/payment_group/offsets"
-```
-
-**Expected Response** (`200 OK`):
-```json
-{
-  "group_id": "payment_group",
-  "offsets": [
-    {
-      "topic": "payments",
-      "partition": 0,
-      "current_offset": 42,
-      "metadata": null
-    },
-    {
-      "topic": "payments",
-      "partition": 1,
-      "current_offset": 109,
-      "metadata": ""
-    }
-  ]
-}
-```
-
-**Error Response** (`404 Not Found`):
-```json
-{
-  "detail": "Consumer group 'some_unknown_group' not found or no offsets committed."
-}
+curl -X GET "http://localhost:8000/consumergroups/groupA/offsets" \
+     -H "Accept: application/json"
 ```
 
 ---
 
-### Example Usage
+#### **3.2.3. Get Consumer Group Lag for a Specific Topic**
 
-1. **List All Groups** in the cluster:
-   ```bash
-   curl -X GET "http://localhost:8000/consumergroups?all_groups=true"
-   ```
-   This returns **every** consumer group that Kafka knows about, not just the ones managed by this server.
+**Endpoint**:
+```
+GET /monitor/consumer-group-lag
+```
 
-2. **List Only Groups** known to this service:
-   ```bash
-   curl -X GET "http://localhost:8000/consumergroups"
-   ```
-   Returns consumer groups that the **Kafka Fetcher Server** has created in memory.
+**Description**:  
+Fetches the **current offset**, **log-end offset**, and computed **lag** for each partition of a given topic from the perspective of the specified consumer group. Internally:
+1. Retrieves the committed offsets from the Kafka cluster via `KafkaAdminClient`.
+2. Uses a temporary KafkaConsumer (not joining a group) to fetch log-end offsets.
+3. Calculates `lag = (log_end_offset - current_offset)`.
 
-3. **Get Offsets** for a specific group:
-   ```bash
-   curl -X GET "http://localhost:8000/consumergroups/payment_group/offsets"
-   ```
-   Provides an array of partition offsets (and optional metadata) for `payment_group`.
+**Important**:  
+- **Topic Names Are Case-Sensitive**: Make sure the topic in your query exactly matches the one used when creating the consumer.
+- If your consumer has not committed offsets yet, the lag might appear as `0`.
 
-With these **consumer group monitoring** endpoints, you can programmatically track **which consumer groups exist**, verify **where they are reading**, and **monitor** if they have **committed offsets** as expected.
+**Example `curl` Command**:
+```bash
+curl -X GET "http://localhost:8000/monitor/consumer-group-lag?group_id=groupA&topic=TopicA&bootstrap_servers=localhost:19092" \
+     -H "Accept: application/json"
+```
+
+**Expected Response**:
+```json
+{
+  "group_id": "groupA",
+  "topic": "TopicA",
+  "partitions": {
+    "0": { "current_offset": 2, "log_end_offset": 2, "lag": 0 },
+    "1": { "current_offset": 0, "log_end_offset": 0, "lag": 0 },
+    "2": { "current_offset": 2, "log_end_offset": 2, "lag": 0 }
+  }
+}
+```
 
 ---
 
@@ -1245,11 +1208,17 @@ settings = Settings()
 
 ## **5. Example Usage**
 
-### **5.1. Creating a Consumer**
+This section provides **hands-on** examples for common workflows.
 
-**Request**:
+---
+
+### **5.1. Creating a Consumer (Single or Multiple Processors)**
+
+You can create a consumer with multiple processors or keep it simple with only a `file_sink` processor.
+
+**Example**:
 ```bash
-curl -X POST "http://localhost:8000/api/consumers" \
+curl -X POST "http://localhost:8000/consumers" \
      -H "Content-Type: application/json" \
      -d '{
            "broker_ip": "192.168.0.10",
@@ -1273,68 +1242,133 @@ curl -X POST "http://localhost:8000/api/consumers" \
            ]
          }'
 ```
+This example shows how you could attach both a file sink processor and a database sync processor. If you only need to write messages to files, just include the `file_sink` processor.
 
-**Response**:
-```json
-{
-  "consumer_id": "123e4567-e89b-12d3-a456-426614174000",
-  "broker_ip": "192.168.0.10",
-  "broker_port": 9092,
-  "topic": "payments",
-  "consumer_group": "payment_group",
-  "status": "ACTIVE",
-  "processor_configs": [
-    {
-      "id": "223e4567-e89b-12d3-a456-426614174001",
-      "processor_type": "file_sink",
-      "config": {
-        "file_path": "/var/log/payment_messages.log"
-      },
-      "created_at": "2025-01-01T12:00:00Z",
-      "updated_at": "2025-01-01T12:00:00Z"
-    },
-    {
-      "id": "323e4567-e89b-12d3-a456-426614174002",
-      "processor_type": "database_sync",
-      "config": {
-        "db_dsn": "postgresql://user:password@db-host/payments"
-      },
-      "created_at": "2025-01-01T12:00:00Z",
-      "updated_at": "2025-01-01T12:00:00Z"
-    }
-  ],
-  "created_at": "2025-01-01T12:00:00Z",
-  "updated_at": "2025-01-01T12:00:00Z"
-}
-```
+---
 
-### **5.2. Monitoring Consumer Lag**
+### **5.2. Creating Consumers and Joining a Consumer Group (Hands-On Scenario)**
 
-**Request**:
+Below is a more **hands-on** example where **three different consumers** connect to **three different brokers** (ports 19092, 19093, 19094) but all join the same group (`groupA`) to consume from `TopicA`.
+
+**Create Consumer 1 (Broker Port: 19092)**:
 ```bash
-curl -X GET "http://localhost:8000/monitor/consumer-group-lag?group_id=payment_group&topic=payments&bootstrap_servers=localhost:9092"
+curl -X POST "http://localhost:8000/consumers/" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "broker_ip": "localhost",
+           "broker_port": 19092,
+           "topic": "TopicA",
+           "consumer_group": "groupA",
+           "auto_start": true,
+           "processor_configs": [
+             {
+               "processor_type": "file_sink",
+               "config": {
+                 "file_path": "./logs_test/topicA_messages_1.log"
+               }
+             }
+           ]
+         }'
 ```
 
-**Response**:
+**Create Consumer 2 (Broker Port: 19093)**:
+```bash
+curl -X POST "http://localhost:8000/consumers/" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "broker_ip": "localhost",
+           "broker_port": 19093,
+           "topic": "TopicA",
+           "consumer_group": "groupA",
+           "auto_start": true,
+           "processor_configs": [
+             {
+               "processor_type": "file_sink",
+               "config": {
+                 "file_path": "./logs_test/topicA_messages_2.log"
+               }
+             }
+           ]
+         }'
+```
+
+**Create Consumer 3 (Broker Port: 19094)**:
+```bash
+curl -X POST "http://localhost:8000/consumers/" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "broker_ip": "localhost",
+           "broker_port": 19094,
+           "topic": "TopicA",
+           "consumer_group": "groupA",
+           "auto_start": true,
+           "processor_configs": [
+             {
+               "processor_type": "file_sink",
+               "config": {
+                 "file_path": "./logs_test/topicA_messages_3.log"
+               }
+             }
+           ]
+         }'
+```
+
+---
+
+### **5.3. Verify Consumer Group Status**
+
+Use Kafka’s CLI tool to check the status of the consumer group in the cluster:
+
+```bash
+bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:19092 \
+  --describe \
+  --group groupA
+```
+You should see partitions assigned to each of the three consumers, along with their offsets and lag.
+
+---
+
+### **5.4. Produce Messages to TopicA**
+
+Use the Kafka console producer (or any other producer method) to send messages:
+
+```bash
+bin/kafka-console-producer.sh \
+  --broker-list localhost:19092,localhost:19093,localhost:19094 \
+  --topic TopicA \
+  --property parse.key=true \
+  --property key.separator=":"
+
+>user123:Hello from user123
+>user456:Hello from user456
+```
+
+---
+
+### **5.5. Query Lag Using the Monitor Endpoint**
+
+After producing messages, wait briefly so that consumers can commit offsets. Then check the lag via:
+
+```bash
+curl -X GET "http://localhost:8000/monitor/consumer-group-lag?group_id=groupA&topic=TopicA&bootstrap_servers=localhost:19092" \
+     -H "Accept: application/json"
+```
+
+Expected response (values depend on actual offset commits):
 ```json
 {
-  "0": {
-    "current_offset": 42,
-    "log_end_offset": 45,
-    "lag": 3
-  },
-  "1": {
-    "current_offset": 109,
-    "log_end_offset": 109,
-    "lag": 0
-  },
-  "2": {
-    "current_offset": 87,
-    "log_end_offset": 92,
-    "lag": 5
+  "group_id": "groupA",
+  "topic": "TopicA",
+  "partitions": {
+    "0": { "current_offset": 2, "log_end_offset": 2, "lag": 0 },
+    "1": { "current_offset": 0, "log_end_offset": 0, "lag": 0 },
+    "2": { "current_offset": 2, "log_end_offset": 2, "lag": 0 }
   }
 }
 ```
+
+If you see `"lag": 0` across all partitions, verify with `kafka-consumer-groups.sh` that offsets have actually been committed.
 
 ---
 
@@ -1512,5 +1546,3 @@ Enjoy managing and monitoring your Kafka consumers with the **Kafka Fetcher Serv
 5. **Versioning**: Track processor or consumer versions to allow rollback or multi-version deployments.
 
 ---
-
-By following this comprehensive README, users and developers can effectively set up, use, and contribute to the Kafka Fetcher Server, ensuring seamless integration and efficient management of Kafka consumers and consumer groups in their environments.
